@@ -52,6 +52,8 @@ library
     data-binary-ieee754,
     mmorph,
     aeson,
-    JuicyPixels
+    JuicyPixels,
+    hsys
   hs-source-dirs:      src/
   default-language:    Haskell2010
+  ghc-options: -fprof-auto -fprof-cafs -rtsopts -threaded

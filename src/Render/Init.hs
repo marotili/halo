@@ -27,17 +27,17 @@ withWindow :: Int -> Int -> String -> (GLFW.Window -> IO ()) -> IO ()
 withWindow width height title f = do
     GLFW.setErrorCallback $ Just simpleErrorCallback
     r <- GLFW.init
-    --GLFW.windowHint $ GLFW.WindowHint'OpenGLDebugContext True
-    --GLFW.windowHint $ GLFW.WindowHint'ContextVersionMajor 3
-    --GLFW.windowHint $ GLFW.WindowHint'ContextVersionMinor 3
+    GLFW.windowHint $ GLFW.WindowHint'OpenGLDebugContext True
+    GLFW.windowHint $ GLFW.WindowHint'ContextVersionMajor 3
+    GLFW.windowHint $ GLFW.WindowHint'ContextVersionMinor 3
 
     when r $ do
         m <- GLFW.createWindow width height title Nothing Nothing
         case m of
           (Just win) -> do
               GLFW.makeContextCurrent m
-              f win
               GLFW.setErrorCallback $ Just simpleErrorCallback
+              win `seq` f win
               GLFW.destroyWindow win
           Nothing -> return ()
         GLFW.terminate

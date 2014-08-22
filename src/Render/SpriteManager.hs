@@ -197,6 +197,7 @@ newSpriteRenderer :: SpriteManager -> StateT RenderManager IO SpriteRenderer
 newSpriteRenderer sm = do
     program <- lift $ setupShaders "sprite.vert" "sprite.frag"
     lift $ GL.currentProgram $= Just program
+    lift $ logGL "currentProgram"
 
     atlasGroup <- initTextures sm
 
@@ -211,12 +212,12 @@ newSpriteRenderer sm = do
             let numImages = Map.size $ sm^.smAtlas
             textureUnits <- replicateM numImages (hoist generalize mkTextureUnit)
             textures <- lift (GL.genObjectNames numImages :: IO [GL.TextureObject])
+            lift $ logGL "newSpriteRenderer: genObjectNames"
 
             foldM (\atlasGroup (texUnit, texture, spriteAtlasName) -> lift $ do
                     traceShow ("start") $ return ()
                     let Just spriteAtlas = sm^.smAtlas.at spriteAtlasName
                     Right pngImage <- traceShow (spriteAtlas^.saImage.iSource) $ P.readPng $ spriteAtlas^.saImage.iSource
-                    print "pngImage"
                     uploadImage texUnit texture pngImage
                     traceShow ("test") $ return $ Map.insert spriteAtlasName
                         (SpriteTextureInfo texUnit spriteAtlasName texture)
@@ -233,6 +234,7 @@ emptySpriteAtlasGroup = SpriteAtlasGroup Map.empty
 newSpriteRenderUnit :: SpriteRenderer -> NumEntities -> IO SpriteRenderUnit
 newSpriteRenderUnit sr numEntities = do
     [vao] <- GL.genObjectNames 1 :: IO [GL.VertexArrayObject]
+    logGL "newSpriteRenderUnit: genObjectNames"
     buf <- newDynamicSpriteBuffer numEntities
     bindSpriteBuffer vao buf
 
