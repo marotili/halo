@@ -85,7 +85,8 @@ makeLenses ''FontManager
 
 
 chars :: String
-chars = map chr [0..128] -- "1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+-- chars = map chr [0..128] -- "1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+chars = "1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 
 -- | flatten atlas for use in uniform (text.vert)
