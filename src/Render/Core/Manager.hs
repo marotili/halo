@@ -12,25 +12,31 @@ module Render.Core.Manager
     )
 where
 
-import qualified Data.Set                      as Set
-import           Graphics.Rendering.OpenGL     (($=))
-import qualified Graphics.Rendering.OpenGL     as GL
+import           Debug.Trace
+import           Graphics.Rendering.FreeType.Internal.Face
+import qualified Data.Set as Set
+import           Graphics.Rendering.OpenGL (($=))
+import qualified Graphics.Rendering.OpenGL as GL
 import qualified Graphics.Rendering.OpenGL.Raw as GLRaw
 
 import           Control.Lens
-import           Control.Monad.Morph           (generalize, hoist)
+import           Control.Monad.Morph (generalize, hoist)
 import           Control.Monad.State.Strict
 import           Data.Binary.IEEE754
-import qualified Data.Vector.Storable          as V
+import         qualified  Data.Map as Map
+import qualified Data.Vector.Storable as V
 import           Data.Word
 
 import           Foreign.C.Types
+import           Foreign.Storable
 import           Foreign.Ptr
 
 import           Render.Core.Camera
 import           Render.Core.Error
 import           Render.Core.Render
 import           Render.Core.Text
+                 
+import           Data.Maybe
 
 data RenderManager = RenderManager
     { _rmUsedTextures :: Set.Set GL.TextureUnit
@@ -148,6 +154,10 @@ renderTriangles renderer cam = do
     --GLRaw.glDrawElements GLRaw.gl_TRIANGLES (fromIntegral $ renderer^.trNumVertices) GLRaw.gl_UNSIGNED_INT nullPtr
     GLRaw.glDrawElements GLRaw.gl_TRIANGLES 3 GLRaw.gl_UNSIGNED_INT nullPtr
 
+data TextBuffer = TextBuffer
+  { _tbVertices :: V.Vector Word32
+  , _tbElements :: V.Vector Word32
+  }
 
 data FontRenderer = FontRenderer
     { _frTextAtlas        :: TextAtlas
@@ -159,6 +169,7 @@ data FontRenderer = FontRenderer
     , _frColorBuffer      :: GL.BufferObject
     , _frElementBuffer    :: GL.BufferObject
     , _frAtlasUniform     :: GL.BufferObject
+    , _ftFace :: FT_Face
     }
 makeLenses ''FontRenderer
 
@@ -169,20 +180,66 @@ mkTextureUnit = do
     let texUnit = head $ filter (\unit -> not $ Set.member unit usedTextures) . map GL.TextureUnit $ [0..]
     rmUsedTextures %= Set.insert texUnit
     return texUnit
+    
+type BufferLocation = Int
+type FreeSize = Int -- ^ In Bytes
+
+data TextCache = TextCache
+  { _tcBuffer :: GL.BufferObject
+  , _tcTexts :: Map.Map String BufferLocation
+  , _tcFreeSpace :: [(BufferLocation, FreeSize)]
+  }
+  
+tcResize :: TextCache -> IO TextCache
+tcResize = undefined
+         
+ret :: Getter a (IO a)
+ret = to (return)
+     
+l = do
+  t <- newTextCache
+  t^.ret
+         
+         
+newTextCache :: IO TextCache
+newTextCache =
+  let initialSize = 4 * 4 * 100 -- 100 chars (4 byte per char)
+      freeSpace = [(0, initialSize)]
+  in return TextCache
+    { _tcBuffer = GL.nullBuffer
+    , _tcTexts = Map.empty
+    , _tcFreeSpace = freeSpace
+    }
+
+tcAddText :: String -> TextCache -> IO TextCache
+tcAddText = undefined
+  
+-- TODO: fragmentation, referencecount
 
 -- | initialize a new font renderer using a loaded text atlas
 newFontRenderer :: TextAtlas -> StateT RenderManager IO FontRenderer
 newFontRenderer textAtlas = do
     textureUnit <- hoist generalize mkTextureUnit
     lift $ do
+        fm <- newFontManager
+        font <- newFont fm "/home/marco/workspace/haskell/henge/games/boom/data/font.otf" 64
+        face <- peek $ font^.fontFace
+        (shaped, _) <- shapeLine face (newText "AVKERNimlno") 1024
+        let glyphs' = map (\gl -> textAtlas^.atlasCodepointGlyphs.at (gl^.scCodepoint).to fromJust.glyphChar) shaped
+        print glyphs'
+        let indices = map atlasIndex glyphs'
+    
+
         [topoBuffer, colorBuffer, elementBuffer, atlasBuffer] <- GL.genObjectNames 4 :: IO [GL.BufferObject]
         [vao] <- GL.genObjectNames 1 :: IO [GL.VertexArrayObject]
         program <- setupShaders "text.vert" "text.frag"
         GL.currentProgram $= Just program
+    
+        let vertexData = V.fromList $ concatMap (\(index, glyph) -> [floatToWord $ glyph^.scOffset._1, floatToWord $ glyph^.scOffset._2, fromInteger index::Word32, floatToWord 0]) $ zip indices shaped
 
-        let vertexData = V.fromList $ concat $ replicate 6 [floatToWord 2, floatToWord 0, 33, 0] ++ replicate 6 [floatToWord 77, floatToWord 0, 0, 0]
-        let elementData = V.fromList [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] :: V.Vector Word32
-        let atlasData = atlasToStorable textAtlas
+        -- let vertexData = V.fromList $ [floatToWord 3, floatToWord 0, 0, 0] ++ [floatToWord 77, floatToWord 0, 20, 0]
+        let elementData = V.fromList $ take (V.length vertexData) [(0::Word32), (1::Word32)..] :: V.Vector Word32
+        let atlasData = traceShow vertexData $ atlasToStorable textAtlas
         uploadFromVec (V.length vertexData) GL.ArrayBuffer topoBuffer vertexData
         uploadFromVec (V.length elementData) GL.ElementArrayBuffer elementBuffer elementData
         uploadFromVec (V.length atlasData) GL.UniformBuffer atlasBuffer atlasData
@@ -196,9 +253,11 @@ newFontRenderer textAtlas = do
 
         GL.bindBuffer GL.ArrayBuffer $= Just topoBuffer
         GLRaw.glVertexAttribPointer posLoc 2 GLRaw.gl_FLOAT 0 16 nullPtr
+        GLRaw.glVertexAttribDivisor posLoc 1
         GLRaw.glEnableVertexAttribArray posLoc
 
         GLRaw.glVertexAttribIPointer charIdLoc 1 GLRaw.gl_INT 16 (plusPtr nullPtr 8)
+        GLRaw.glVertexAttribDivisor charIdLoc 1
         GLRaw.glEnableVertexAttribArray charIdLoc
 
         [imageTexture] <- GL.genObjectNames 1 :: IO [GL.TextureObject]
@@ -242,6 +301,11 @@ renderText fr cam = do
     GL.bindBuffer GL.ElementArrayBuffer $= Just (fr^.frElementBuffer)
     logGL "renderText: bindElementbuffer"
     --GLRaw.glDrawElements GLRaw.gl_TRIANGLES (fromIntegral $ renderer^.trNumVertices) GLRaw.gl_UNSIGNED_INT nullPtr
-    GLRaw.glDrawElements GLRaw.gl_TRIANGLES 12 GLRaw.gl_UNSIGNED_INT nullPtr
+    --GLRaw.glDrawElements GLRaw.gl_TRIANGLES 12 GLRaw.gl_UNSIGNED_INT nullPtr
+    GLRaw.glDrawElementsInstanced GLRaw.gl_TRIANGLES 6 GLRaw.gl_UNSIGNED_INT (plusPtr nullPtr (2*4*6)) 4
+    -- GLRaw.glDrawArraysInstancedBaseInstance GLRaw.gl_TRIANGLES 1 6 1 
+    --let from = 6
+    -- let count = 6
+    -- GLRaw.glDrawArraysInstanced GLRaw.gl_TRIANGLES from count 4
     logGL "renderText: glDrawElements"
 

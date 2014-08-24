@@ -47,7 +47,7 @@ withWindow width height title f = do
 
 clearWindow :: GLFW.Window -> IO ()
 clearWindow window = do
-	GL.clearColor $= GL.Color4 1 1 1 1
+	GL.clearColor $= GL.Color4 0.5 0.5 0.5 1
 	logGL "clearWindow: clearColor"
 	GL.clear [GL.ColorBuffer]
 	logGL "clearWindow: clear"

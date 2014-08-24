@@ -153,7 +153,7 @@ render rdr = do
              Nothing -> return ()
            renderSprites (rdr^.rSpriteRenderer) sru' cam
         ) srus
-  GLFW.swapBuffers (rdr^.rWindow)
+  -- GLFW.swapBuffers (rdr^.rWindow)
   logGL "swapBuffers"
   
 data RenderCommands next =
