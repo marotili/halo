@@ -29,6 +29,7 @@ module Render.Core
 , RenderControl
 , newViewport
 , setViewport
+, getRenderControlResult
 )
 where
 
@@ -319,11 +320,16 @@ data Resources = Resources { _resourceSprites :: !(Map.Map (AtlasName, SpriteNam
 
 makeLenses ''Resources
            
+getRenderControlResult :: Free RenderCommands a -> StateT Renderer Identity a 
+getRenderControlResult rc = run rc (Resources Map.empty)
+  where run rc res = do (resNew, rcNext) <- (runRenderControl' rc res)
+                        case rcNext of Pure a -> return a
+                                       _ -> run rcNext resNew
+         
 runRenderControl :: Free RenderCommands a -> StateT Renderer IO a
 runRenderControl free = do
-  renderer <- get
   --let newFree = removeMissing renderer emptyNames free
-  runRenderControl' free (Resources Map.empty)
+  runRenderControlIO free (Resources Map.empty)
 
 -- | remove all actions involving resources that do not exist
 -- | TODO: implement
@@ -339,24 +345,40 @@ runRenderControl free = do
 
 -- removeMissing renderer newNames (Free n) =
 --     Free $ fmap (removeMissing renderer newNames) n
-
+       
+runRenderControlIO :: Free RenderCommands a -> Resources -> StateT Renderer IO a
+runRenderControlIO (Free (NewSpriteRenderUnit ruName f)) res = do
+  ruExists <- uses rSpriteRenderUnits (Map.member ruName)
+  if ruExists
+     then error $ "Render unit " ++ ruName ++ " arleady exists."
+     else do
+       spriteRenderer <- use rSpriteRenderer
+       newRU <- lift $ SM.newSpriteRenderUnit spriteRenderer 100
+       rSpriteRenderUnits %= Map.insert ruName (newSpriteRenderUnitInfo newRU)
+       runRenderControlIO (f $ SpriteRenderUnitId ruName) res
+  
+runRenderControlIO f res = do
+  (newRes, rcNext) <- runRenderControl' f res
+  case rcNext of Pure a -> return a
+                 _ -> do runRenderControlIO rcNext newRes
+        
 
 -- | run all actions (all names should be valid)
-runRenderControl' :: Free RenderCommands a -> Resources -> StateT Renderer IO a
+runRenderControl' :: (Monad m) => Free RenderCommands a -> Resources -> (StateT Renderer m (Resources, Free RenderCommands a))
 runRenderControl' (Free (NewCamera camName (viewportWidth, viewportHeight) f)) res =
   do
     camExists <- uses rCameras (Map.member camName)
     if camExists
       then error $ "Camera " ++ camName ++ " already exists."
       else do rCameras %= Map.insert camName (newDefaultCamera viewportWidth viewportHeight)
-              runRenderControl' (f $ CameraId camName) res
+              return (res, f $ CameraId camName)
 
 -- | TODO: maybe missing is not needed
 -- we test anyway on access. maybe we need it for debugging purposes
 runRenderControl' (Free (GetCamera camName f)) res = do
   mCam <- use $ rCameras . at camName
   case mCam of 
-    Just cam -> runRenderControl' (f $ CameraId camName) res
+    Just cam -> return (res, f $ CameraId camName)
     Nothing -> error "Camera not found"
 
 runRenderControl' (Free (NewSpriteRenderUnit ruName f)) res = do
@@ -365,43 +387,42 @@ runRenderControl' (Free (NewSpriteRenderUnit ruName f)) res = do
      then error $ "Render unit " ++ ruName ++ " arleady exists."
      else do
        spriteRenderer <- use rSpriteRenderer
-       newRU <- lift $ SM.newSpriteRenderUnit spriteRenderer 100
-       rSpriteRenderUnits %= Map.insert ruName (newSpriteRenderUnitInfo newRU)
-       runRenderControl' (f $ SpriteRenderUnitId ruName) res
+       -- rSpriteRenderUnits %= Map.insert ruName (newSpriteRenderUnitInfo newRU)
+       return (res, f $ SpriteRenderUnitId ruName)
   
 runRenderControl' (Free (GetSpriteRenderUnit ruName f)) res = do
   mRu <- use $ rSpriteRenderUnits.at ruName
   case mRu of
-    Nothing -> error "No render unit"
+    Nothing -> error ("No render unit: " ++ show ruName)
     Just ru -> do
-      runRenderControl' (f $ SpriteRenderUnitId ruName) res
+      return (res, f $ SpriteRenderUnitId ruName)
 
 -- we checked in a pass before if the sprite does exist
 runRenderControl' (Free (GetSprite atlasName spriteName f)) res = do
   sm <- use rSpriteManager
   let Just spriteAtlas = sm^.smAtlas.at atlasName
   let Just sprite = spriteAtlas^.saSprites.at spriteName
-  runRenderControl' (f $ SpriteId atlasName spriteName) (res & resourceSprites %~ Map.insert (atlasName, spriteName) sprite)
+  return (res & resourceSprites %~ Map.insert (atlasName, spriteName) sprite, f $ SpriteId atlasName spriteName)
 
 runRenderControl' (Free (AddSprite (SpriteRenderUnitId ruName) (SpriteId atlasName spriteName) pos rot f)) res = do
   let Just sprite = res^.resourceSprites.at (atlasName, spriteName)
   spriteInstanceId <- mkSpriteInstanceId
   rSpriteInstanceRu . at spriteInstanceId .= Just ruName
   rSpriteRenderUnits.at ruName._Just.ruSpriteInstances.at spriteInstanceId .= (Just $ newSpriteInstance sprite pos rot)
-  runRenderControl' (f $ spriteInstanceId) res
+  return (res, f $ spriteInstanceId)
 
 runRenderControl' (Free (ModSpriteInstance siId mod n)) res = do
   Just ruName <- use $ rSpriteInstanceRu . at siId
   rSpriteRenderUnits.at ruName._Just.ruSpriteInstances.at siId %= Just . mod . fromJust
-  runRenderControl' n res
+  return (res, n)
 
 runRenderControl' (Free (SetCamera (SpriteRenderUnitId ruName) (CameraId cameraName) n)) res = do
   rSpriteRenderUnits.at ruName._Just.ruCamera .= (Just cameraName)
-  runRenderControl' n res
+  return (res, n)
 
 runRenderControl' (Free (ModCamera (CameraId camName) modifyFunc n)) res = do
   rCameras . at camName ._Just %= modifyFunc
-  runRenderControl' n res
+  return (res, n)
 
 -- runRenderControl' (Free (ModifySpriteInstance (SpriteRenderUnitId ruName) name modifyFunc n)) res = do
 --   rSpriteRenderUnits.at ruName._Just.ruSpriteInstances.at name._Just %= modifyFunc
@@ -409,14 +430,17 @@ runRenderControl' (Free (ModCamera (CameraId camName) modifyFunc n)) res = do
 
 runRenderControl' (Free (NewViewport name vp f)) res = do
   rViewports.at name .= (Just $ vp)
-  runRenderControl' (f $ ViewportId name) res
+  return (res, f $ ViewportId name)
 
 
-runRenderControl' (Free (SetViewport (SpriteRenderUnitId ruName) (ViewportId vpName) n)) res = do
-  rSpriteRenderUnits.at ruName._Just.ruViewport .= Just vpName
-  runRenderControl' n res
+runRenderControl' (Free (SetViewport (SpriteRenderUnitId ruName) (ViewportId vpName) n)) res = 
+  do
+    rSpriteRenderUnits.at ruName._Just.ruViewport .= Just vpName
+    return (res, n)
+  
+runRenderControl' (Pure a) res = return (res, Pure a)
 
-runRenderControl' (Pure a) res = return a
+-- runRenderControl' (Pure a) res = return a
 
 -- mainTest :: IO ()
 -- mainTest = withWindow 100 100 "Test" $ \ _ -> do
